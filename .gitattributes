@@ -1,0 +1,8 @@
+# Keep the stored bytes identical to what the build produces: client.js is compared by hash.
+* text=auto eol=lf
+
+# Binary assets must never be line-ending converted.
+*.mp4 binary
+*.webp binary
+*.png binary
+*.ttf binary
