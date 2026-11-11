@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "look": {
+    "surface": 50,
+    "video": 100,
+    "veil": 0,
+    "status": "",
+    "frame": true,
+    "scene": 4,
+    "splash": true,
+    "splashSound": true,
+    "persona": false,
+    "personaWork": false
+  },
+  "face": 0
+}

@@ -1,0 +1,10 @@
+# Dependencies installed by DSH when the plugin is linked or published.
+node_modules/
+
+# Local pack output.
+*.tgz
+
+# OS / editor noise.
+Thumbs.db
+.DS_Store
+*.swp
