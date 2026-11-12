@@ -49,26 +49,36 @@ const NAME = 'dsh-yeermu-theme';
 const METRICS_ROUTE = '/yeermu-theme/metrics';
 const WEATHER_ROUTE = '/yeermu-theme/weather';
 /*
- * Persona: the character card ships as `assets/persona.md` and is materialised as the workspace
- * instruction file `AGENTS.local.md`, which `dsh-agent-instructions` injects into every prompt of
- * that workspace. Toggling is a file write/delete; the marker keeps us off a user-written file.
+ * Persona: the character card ships as `assets/persona.md` and is contributed to the **system
+ * prompt** for every session — any workspace, no file written anywhere.
+ *
+ * This replaced a workspace-file design that wrote `AGENTS.local.md` next to a guessed workspace
+ * root. That guess was wrong on a desktop install: `sandboxPolicy.resolve({})` has no session to
+ * ask inside `apply()`, so it fell back to the host process cwd (the profile directory). The card
+ * landed in a place no session reads, and the switch looked broken. A prompt contribution has
+ * none of those failure modes: it is attached per assembly, so it works in every workspace and a
+ * toggle takes effect on the very next message.
  */
 const PERSONA_ROUTE = '/yeermu-theme/persona';
 /* Opens the card in the OS editor so the owner can edit it without leaving the app. */
 const CARD_ROUTE = '/yeermu-theme/open-card';
 const PERSONA_SOURCE = path.join(PACKAGE_ROOT, 'assets', 'persona.md');
+/* Section name in the system prompt registry; stable, so a reload replaces rather than duplicates. */
+const PERSONA_SECTION = 'yeermu:persona';
+/* Sit immediately after the deployment persona prefix: this is a persona, not a runtime fact. */
+const PERSONA_ORDER_BASE = 'DEPLOYMENT_PERSONA_PREFIX';
 /*
- * Where `AGENTS.local.md` goes. **Not** the plugin's parent directory: that is the workspace only
- * because this checkout happens to sit inside it. A marketplace install lives under
- * `node_modules/@local/…`, and writing instructions there would be a stray file nobody reads.
- * The real answer is the session workspace, which the host exposes as
- * `ctx.get('sandboxPolicy').resolve({}).workspaceRoot` (session cwd, else the deployment root).
- * `resolvePersonaTarget()` repoints both values once `apply(ctx)` has a context; until then the
- * dev-layout guess keeps the exported helpers usable offline.
+ * Where the two switches live. Deliberately outside the package and outside every profile:
+ * a marketplace install keeps its files under `node_modules`, where a write is lost on upgrade and
+ * a profile directory is not ours to fill. `DSH_HOME` wins when the host sets it.
+ *
+ * `YEERMU_PERSONA_STATE` is a test seam only: `tools/check_prefs.mjs` points it at a temp file so
+ * the enable/disable round trip can run without touching the real setting.
  */
-let PERSONA_DIR = path.dirname(PACKAGE_ROOT);
-let PERSONA_FILE = path.join(PERSONA_DIR, 'AGENTS.local.md');
-const PERSONA_MARK = '<!-- yeermu-theme:persona';
+const PERSONA_STATE_FILE =
+  process.env.YEERMU_PERSONA_STATE ||
+  path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'yeermu-theme', 'persona.json');
+const PERSONA_STATE_DIR = path.dirname(PERSONA_STATE_FILE);
 /*
  * Default look. The shipped value is baked into `client.js` by `.build-yeermu/build.py` from
  * `assets/preset.json`, because a marketplace install is a read-only package: nothing may be read
@@ -356,24 +366,34 @@ function refreshWeather() {
  * Persona: the 曳尔沐 character card, materialised as workspace instructions
  * ------------------------------------------------------------------ */
 
-/** The card itself, shipped with the package. Missing file simply means "no card". */
+/**
+ * The card itself, shipped with the package. Missing file simply means "no card".
+ *
+ * Cached by mtime: the text is read on every prompt assembly, and a 44 KB file should not be
+ * re-read for each model step. Editing the card in place is still picked up without a restart.
+ */
+let cardCache = { mtime: -1, text: '' };
 function personaCard() {
   try {
-    return fs.readFileSync(PERSONA_SOURCE, 'utf8').trim();
+    const mtime = fs.statSync(PERSONA_SOURCE).mtimeMs;
+    if (cardCache.mtime !== mtime) {
+      cardCache = { mtime, text: fs.readFileSync(PERSONA_SOURCE, 'utf8').trim() };
+    }
+    return cardCache.text;
   } catch {
     return '';
   }
 }
 
 /**
- * Render the instruction file. `workRoleplay` decides whether the persona is allowed to colour
- * tool/code output as well, or only the prose aimed at the user.
+ * Render the prompt text. `workRoleplay` decides whether the persona may colour tool/code output
+ * as well, or only the prose aimed at the user.
  * @param {boolean} workRoleplay allow the in-character voice during task work.
- * @returns {string} markdown body with the ownership marker on the first line.
+ * @returns {string} markdown body, or '' when the card is missing.
  */
-function personaDocument(workRoleplay) {
+function personaBody(workRoleplay) {
   const card = personaCard();
-  const marker = PERSONA_MARK + ' work=' + (workRoleplay ? 'on' : 'off') + ' -->';
+  if (card === '') return '';
   const boundary = [
     '## 输出边界',
     '',
@@ -389,7 +409,7 @@ function personaDocument(workRoleplay) {
         ]),
     '- 准确性、完整性和安全性永远优先于风格；角色扮演不得影响技术判断。',
   ];
-  return [marker, '', '# 角色扮演：曳尔沐（Elyms）', '', card, '', ...boundary, ''].join('\n');
+  return ['# 角色扮演：曳尔沐（Elyms）', '', card, '', ...boundary, ''].join('\n');
 }
 
 /**
@@ -412,47 +432,51 @@ function openInEditor(target) {
   }
 }
 
-/**
- * Point the persona file at the real workspace root.
- *
- * The plugin cannot know the workspace from its own path (published installs sit in
- * `node_modules`), so ask the host: `sandboxPolicy.resolve()` returns the session cwd when there is
- * one and the deployment workspace root otherwise. Any failure keeps the dev-layout fallback, and a
- * path inside `node_modules` is refused outright — nothing good ever writes there.
- * @param {import('@deepseek-ai/cordis').Context} ctx plugin context.
- */
-function resolvePersonaTarget(ctx) {
+/** Read the two stored switches. A missing or corrupt file means "off", never a throw. */
+function personaRead() {
   try {
-    const policy = ctx && typeof ctx.get === 'function' ? ctx.get('sandboxPolicy') : null;
-    const resolved = policy && typeof policy.resolve === 'function' ? policy.resolve({}) : null;
-    const root = resolved && typeof resolved.workspaceRoot === 'string' ? resolved.workspaceRoot : '';
-    if (!root) return;
-    if (/(^|[\\/])node_modules([\\/]|$)/i.test(root)) return;
-    PERSONA_DIR = root;
-    PERSONA_FILE = path.join(root, 'AGENTS.local.md');
+    const data = JSON.parse(fs.readFileSync(PERSONA_STATE_FILE, 'utf8'));
+    return { enabled: data.enabled === true, workRoleplay: data.workRoleplay === true };
   } catch {
-    /* keep the fallback: a missing service must not break apply() */
+    return { enabled: false, workRoleplay: false };
   }
 }
 
-/** Current on-disk state. `enabled` is only true when the file is one we wrote. */
+/**
+ * Persist the two switches. Called from the 316651 shortcut and from Settings; a write failure is
+ * reported to that caller as a 500 rather than swallowed, because the switch would otherwise lie.
+ */
+function personaWrite(enabled, workRoleplay) {
+  fs.mkdirSync(PERSONA_STATE_DIR, { recursive: true });
+  fs.writeFileSync(PERSONA_STATE_FILE, JSON.stringify({ enabled, workRoleplay }, null, 2) + '\n', 'utf8');
+}
+
+/** Current state, as reported to the client and to `check_prefs.mjs`. */
 function personaState() {
-  try {
-    const text = fs.readFileSync(PERSONA_FILE, 'utf8');
-    if (!text.startsWith(PERSONA_MARK)) {
-      return { enabled: false, workRoleplay: false, path: PERSONA_FILE, foreign: true };
-    }
-    return { enabled: true, workRoleplay: text.indexOf('work=on') !== -1, path: PERSONA_FILE, foreign: false };
-  } catch {
-    return { enabled: false, workRoleplay: false, path: PERSONA_FILE, foreign: false };
-  }
+  const state = personaRead();
+  return {
+    enabled: state.enabled,
+    workRoleplay: state.workRoleplay,
+    mode: 'systemPrompt',
+    path: PERSONA_STATE_FILE,
+    card: PERSONA_SOURCE,
+    exists: fs.existsSync(PERSONA_STATE_FILE),
+  };
+}
+
+/** The system-prompt text for this moment: '' while the switch is off, so the section drops out. */
+function personaPrompt() {
+  const state = personaRead();
+  if (!state.enabled) return '';
+  return personaBody(state.workRoleplay);
 }
 
 /**
  * One-shot probe with the same code paths the routes use. Exported so a plain
  * `node -e "import('.../index.js').then(m => m.sampleSystem())"` can verify the host half
  * without restarting DSH.
- */export { personaDocument, personaState };
+ */
+export { personaBody, personaPrompt, personaState };
 
 /* ------------------------------------------------------------------ *
  * Preset: `assets/preset.json`, the author's look, baked in at build time
@@ -485,7 +509,7 @@ function writePrefs(data) {
   fs.writeFileSync(PREF_FILE, JSON.stringify(data, null, 2) + '\n', 'utf8');
 }
 
-export { prefsState, resolvePersonaTarget };
+export { prefsState };
 
 export async function sampleSystem() {
   const first = cpuTimes();
@@ -511,8 +535,30 @@ export async function sampleSystem() {
  * @param {import('@deepseek-ai/cordis').Context} ctx plugin context.
  */
 export function apply(ctx) {
-  /* The persona file follows the session workspace, not the plugin's own location. */
-  resolvePersonaTarget(ctx);
+  /*
+   * Persona: contribute the card as a system-prompt section. `text` is a function, so it is read
+   * at every assembly — flipping the switch changes the next message, with no restart and no file
+   * in any workspace. `interpolate: false` keeps the card's prose literal (no `{{variable}}` pass).
+   */
+  ctx.inject(['systemPrompt'], (scope) => {
+    try {
+      const prompt = scope.systemPrompt;
+      if (!prompt || typeof prompt.section !== 'function') return;
+      const base = typeof prompt.getSectionOrder === 'function' ? prompt.getSectionOrder(PERSONA_ORDER_BASE) : NaN;
+      prompt.section({
+        name: PERSONA_SECTION,
+        order: Number.isFinite(base) ? base + 1 : 0,
+        interpolate: false,
+        text: () => personaPrompt(),
+      });
+    } catch (error) {
+      try {
+        ctx.logger?.warn?.(`[${NAME}] persona section failed: ${String(error)}`);
+      } catch {
+        /* ignore */
+      }
+    }
+  });
   /*
    * No `webserver/index-inject` contribution here on purpose.
    *
@@ -619,9 +665,9 @@ export function apply(ctx) {
         },
       });
       /*
-       * Persona switch. GET reports what is on disk; POST writes or removes `AGENTS.local.md`.
-       * A file that exists but lacks our marker is never touched — that is the user's own
-       * instruction file and clobbering it would be worse than ignoring the switch.
+       * Persona switch. GET reports the stored state; POST stores it. Nothing is written into any
+       * workspace: the card reaches the model as a system-prompt section, so the switch applies to
+       * every session and cannot collide with a user-written `AGENTS.local.md`.
        */
       const disposePersona = child.webServer.register({
         kind: 'exact',
@@ -648,19 +694,7 @@ export function apply(ctx) {
           req.on('end', () => {
             try {
               const payload = JSON.parse(body || '{}');
-              const enabled = payload.enabled === true;
-              const workRoleplay = payload.workRoleplay === true;
-              const existing = fs.existsSync(PERSONA_FILE) ? fs.readFileSync(PERSONA_FILE, 'utf8') : '';
-              if (existing !== '' && !existing.startsWith(PERSONA_MARK)) {
-                res.writeHead(409, headers);
-                res.end(JSON.stringify({ ok: false, error: 'AGENTS.local.md 已存在且不是本插件写的', ...personaState() }));
-                return;
-              }
-              if (enabled) {
-                fs.writeFileSync(PERSONA_FILE, personaDocument(workRoleplay), 'utf8');
-              } else if (existing !== '') {
-                fs.unlinkSync(PERSONA_FILE);
-              }
+              personaWrite(payload.enabled === true, payload.workRoleplay === true);
               res.writeHead(200, headers);
               res.end(JSON.stringify({ ok: true, ...personaState() }));
             } catch (error) {

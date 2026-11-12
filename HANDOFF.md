@@ -220,30 +220,46 @@ node -e "import('file:///.../index.js').then(m=>console.log(Object.keys(m)))"
 
 ## 7. 角色扮演子系统（这一大轮的核心）
 
-### 数据流
+### 数据流（2026-11-12 起：系统提示词注入，不写文件）
 
 ```
 assets/persona.md（用户创作，纯人设正文）
-   │ personaDocument(workRoleplay)
-   ▼  首行标记 <!-- yeermu-theme:persona work=on|off --> + H1 标题 + 正文 + 输出边界
-<工作区根>/AGENTS.local.md
-   │ dsh-agent-instructions 每轮读取并作为 system-reminder 注入
+   │ personaBody(workRoleplay)   ← 按 mtime 缓存，改文件即生效
+   ▼  H1 标题 + 正文 + 输出边界（不再有 HTML 标记行）
+ctx.systemPrompt.section({ name:'yeermu:persona', order: prefix+1,
+                           interpolate:false, text: () => personaPrompt() })
+   │ 每次 assemble 求值；开关关闭时返回 ''，整段被丢弃
    ▼
-模型的行为约束
+模型的行为约束（任何工作区、任何会话）
 ```
 
+- 状态：`~/.dsh/yeermu-theme/persona.json` = `{ enabled, workRoleplay }`（`DSH_HOME` 优先）；
+  既不在包内（发布包升级会覆盖），也不在 profile 里（不是我们该填的目录）。
 - **`assets/persona.md` 只放人设正文**：不带 H1、不带「输出边界」（否则会和生成逻辑重复一遍，曾出现过双标题/双边界）。
-- **`personaDocument()` 负责**：标记行、标题、正文、边界段；**「任务优先是硬约束」放在生成侧**，两档（work on/off）都带。
+- **`personaBody()` 负责**：标题、正文、边界段；「任务优先是硬约束」放在生成侧，两档（work on/off）都带。
 - **两档边界**：
   - `work=off`（默认）：只有面向用户的自然语言用角色口吻；代码/命令/diff/日志/提交信息保持专业。
   - `work=on`：全程角色口吻，但代码、命令、文件内容仍必须原样准确。
+- `interpolate: false` 必须保留：角色卡是散文，不能被 `{{变量}}` 插值当成模板。
+
+### 踩过的坑：写工作区文件（1.0.0 的缺陷，已修）
+
+1.0.0 在 `apply()` 里用 `ctx.get('sandboxPolicy').resolve({})` 猜工作区根。桌面版没配
+`sandbox-policy.workspaceRoot`，而 `apply()` 执行时会话还不存在，`resolve({})` 于是退回
+`process.cwd()`——**宿主进程的工作目录（profile 根）**。卡片就被写到
+`~/.dsh/profiles/desktop/AGENTS.local.md`，任何会话都读不到，开关看起来完全无效。
+（`AGENTS.local.md` → 提示词的链路本身是好的，没有 `.git` 也会生效，问题纯粹在写入路径。）
+
+教训：**`apply()` 阶段能拿到的任何路径都不等于会话工作区**。需要按会话决定的东西，走
+`systemPrompt.context/section` 的 `text(context)`（`context.agent.session` 可用），
+或监听 `session/created` 从 `session.header.cwd` 取；不要用 `sandboxPolicy.resolve({})` 兜底。
 
 ### 开关与触发
 
 - 设置页「角色扮演」（默认关）+「工作时也扮演」（默认关，未开总开关时置灰）。
 - **输入框输入 `316651` 并回车**：捕获阶段拦截 Enter（不会发出去）、清空输入、置 `persona=true`、状态条打一句「语音线路接通——是我是我，好久不见啊？」。
-- 关闭开关 = 删除 `AGENTS.local.md`（只删本插件写的）。
-- 设置页另有「打开角色卡文件」（记事本打开 `assets/persona.md`）与「保存角色卡」（原名「重新生成指令文件」，同一功能）。
+- 关闭开关 = 写入 `{ enabled:false }`；下一轮组装时段落返回空串，等于从提示词里消失（不删除任何用户文件）。
+- 设置页另有「打开角色卡文件」（记事本打开 `assets/persona.md`）与「应用角色卡」（重新 POST 状态，让改过的卡片立即被采用）。
 - ⚠️ **「保存角色卡」在开关关闭时是空操作**（2026-11-11 踩过）：它发的 POST 带着 `enabled: look.persona`，关着的时候 Host 只会走"删除"分支，于是点了像没反应——用户当时以为"文件没落到工作区根"。现在按钮会在关闭时明确提示（"保存不会写入文件"），不再假装写文件。**文件落点已实测正确**：`default-workspace\AGENTS.local.md`，`GET /yeermu-theme/persona` 返回 `enabled/path/foreign` 可直接核对。
 
 ### 卡片结构（当前版本）

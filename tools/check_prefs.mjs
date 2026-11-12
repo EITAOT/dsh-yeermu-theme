@@ -2,12 +2,17 @@
 // Read-only: the preset is a build input, so this script never writes or deletes it.
 // Usage: node check_prefs.mjs
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const PKG = path.resolve(import.meta.dirname, '..');
 const PRESET = path.join(PKG, 'assets', 'preset.json');
 const ALLOWED = ['surface', 'video', 'veil', 'status', 'frame', 'scene', 'splash', 'splashSound', 'persona', 'personaWork'];
+// Keep the persona round trip away from the real setting: point the state file at a temp path
+// before the host half is imported (it reads the seam at module load).
+const STATE = path.join(os.tmpdir(), 'yeermu-check-' + process.pid + '.json');
+process.env.YEERMU_PERSONA_STATE = STATE;
 const mod = await import(pathToFileURL(path.join(PKG, 'index.js')).href);
 
 let failed = 0;
@@ -40,26 +45,65 @@ if (look) {
 const face = Number(state.data && state.data.face);
 check('face in 0..3', Number.isInteger(face) && face >= 0 && face <= 3, String(face));
 
-// ---- persona target: must follow the session workspace, never the plugin's own directory ----
-const fakeCtx = (root) => ({
-  get: (name) => (name === 'sandboxPolicy' ? { resolve: () => ({ workspaceRoot: root }) } : undefined),
-});
+// ---- persona: a system-prompt section, not a workspace file ----
+const persona = mod.personaState();
+check('persona state reports the systemPrompt mode', persona.mode === 'systemPrompt', persona.mode);
+// The default is ~/.dsh/yeermu-theme/persona.json; this run overrides it with a temp file, so the
+// invariant worth asserting is the one that matters: switch state never lands inside the package.
+check(
+  'persona state is never written inside the package',
+  !persona.path.startsWith(PKG) && !/node_modules/.test(persona.path),
+  persona.path,
+);
+check('persona prompt is empty while the switch is off', mod.personaPrompt() === '', String(mod.personaPrompt().length));
 
-const dev = mod.personaState().path;
-check('dev fallback is the plugin parent', dev.endsWith('default-workspace\\AGENTS.local.md'), dev);
+const body = mod.personaBody(false);
+check('persona body carries the card', body.includes('角色扮演') && body.length > 1000, body.length + ' chars');
+const workBody = mod.personaBody(true);
+check('work roleplay switches the task-voice rule', workBody.includes('全程使用曳尔沐的口吻'));
 
-mod.resolvePersonaTarget(fakeCtx('C:\\fake\\workspace'));
-const resolved = mod.personaState().path;
-check('follows sandboxPolicy.workspaceRoot', resolved === 'C:\\fake\\workspace\\AGENTS.local.md', resolved);
+// Stand-in for the host context: only the systemPrompt injection matters here.
+let captured = null;
+const fakeCtx = {
+  inject: (deps, callback) => {
+    if (deps.includes('systemPrompt')) {
+      callback({
+        systemPrompt: {
+          getSectionOrder: () => 100,
+          section: (section) => {
+            captured = section;
+          },
+        },
+      });
+    }
+  },
+  logger: { warn: () => {} },
+};
+mod.apply(fakeCtx);
+check('apply registers a systemPrompt section', captured !== null && typeof captured === 'object');
+if (captured) {
+  check('section name is stable', captured.name === 'yeermu:persona', String(captured.name));
+  check('section sits right after the persona prefix', captured.order === 101, String(captured.order));
+  check('section keeps the prose literal', captured.interpolate === false);
+  check('section text is re-read per assembly', typeof captured.text === 'function');
+  check('section text is empty while the switch is off', captured.text() === '');
+}
 
-mod.resolvePersonaTarget(fakeCtx('C:\\app\\resources\\node_modules\\@local\\yeermu-theme'));
-const refused = mod.personaState().path;
-check('refuses a node_modules target', refused === resolved, refused);
+// ---- round trip: switching on really puts the card into the prompt ----
+fs.writeFileSync(STATE, JSON.stringify({ enabled: true, workRoleplay: false }, null, 2));
+const enabledState = mod.personaState();
+check('state file is read back', enabledState.enabled === true && enabledState.exists === true, enabledState.path);
+const enabledText = mod.personaPrompt();
+check('enabled prompt carries the card', enabledText.length > 1000 && enabledText.includes('角色扮演'), enabledText.length + ' chars');
+check('registered section now renders the card', captured && captured.text().length === enabledText.length);
 
-mod.resolvePersonaTarget({});
-check('no service keeps the last good path', mod.personaState().path === resolved);
+fs.writeFileSync(STATE, JSON.stringify({ enabled: true, workRoleplay: true }, null, 2));
+check('work roleplay reaches the prompt', mod.personaPrompt().includes('全程使用曳尔沐的口吻'));
 
-mod.resolvePersonaTarget(fakeCtx(''));
-check('empty root is ignored', mod.personaState().path === resolved);
+fs.writeFileSync(STATE, '{ not json');
+check('a corrupt state file means off', mod.personaPrompt() === '' && mod.personaState().enabled === false);
+
+fs.rmSync(STATE, { force: true });
+check('a missing state file means off', mod.personaPrompt() === '' && mod.personaState().exists === false);
 
 process.exit(failed === 0 ? 0 : 1);

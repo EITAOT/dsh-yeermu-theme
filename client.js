@@ -1618,12 +1618,13 @@ window.__ModuleLoader__.load({
       syncPersona(look);
     }
 
-    /* ---- persona: the switch lives here, the instruction file lives on the host ---- */
+    /* ---- persona: the switch lives here, the card becomes a system-prompt section on the host ---- */
     const PERSONA_CODE = '316651';
 
     /**
-     * Mirror the two switches onto the host, which writes/removes `AGENTS.local.md`. Failures are
-     * logged only: a theme must never break the app over an optional feature.
+     * Mirror the two switches onto the host, which persists them and contributes the card to the
+     * system prompt for every session. Failures are logged only: a theme must never break the app
+     * over an optional feature.
      */
     function syncPersona(look) {
       if (typeof fetch !== 'function') return;
@@ -1648,13 +1649,67 @@ window.__ModuleLoader__.load({
     function enablePersona() {
       const next = Object.assign({}, lookState, { persona: true });
       lookState = next;
-      saveLook(next);
-      applyLook(next);
+      try {
+        saveLook(next);
+      } catch (error) {
+        /* storage may be unavailable; the host copy still has to go out */
+      }
+      /* The host write is the part that makes the card real — never let a UI hiccup skip it. */
+      let painted = false;
+      try {
+        applyLook(next);
+        painted = true;
+      } catch (error) {
+        console.warn('[yeermu-theme] persona UI update failed:', error);
+      }
+      if (!painted) {
+        try {
+          syncPersona(next);
+        } catch (error) {
+          /* nothing left to try */
+        }
+      }
       try {
         setStatus('语音线路接通——是我是我，好久不见啊？');
       } catch (error) {
         /* the plate may not be mounted yet */
       }
+    }
+
+    /**
+     * The composer's current text, from whichever node actually holds it.
+     *
+     * The composer is a Lexical `contenteditable` div, so `value` does not exist on it; a rich
+     * editor may also inject zero-width characters, and a Chinese IME can commit full-width
+     * digits. All three are normalised away before the comparison, otherwise the same code typed
+     * into the same box matches or misses depending on the input method.
+     */
+    function composerText(element) {
+      const raw =
+        typeof element.value === 'string'
+          ? element.value
+          : typeof element.innerText === 'string' && element.innerText !== ''
+            ? element.innerText
+            : element.textContent || '';
+      return raw
+        .replace(/[\u200b-\u200d\ufeff]/g, '')
+        .normalize('NFKC')
+        .trim();
+    }
+
+    /** The editable node behind a keydown, including one inside a shadow root or a nested span. */
+    function editableFrom(event) {
+      const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+      for (const node of path) {
+        if (!node || !node.tagName) continue;
+        if (node.tagName === 'TEXTAREA' || node.tagName === 'INPUT') return node;
+        if (node.isContentEditable === true && node.getAttribute('contenteditable') === 'true') return node;
+      }
+      const target = event.target;
+      if (!target) return null;
+      if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') return target;
+      if (target.isContentEditable === true) return target;
+      return null;
     }
 
     /** Native setter + input event, so the host's controlled textarea actually clears. */
@@ -1678,26 +1733,31 @@ window.__ModuleLoader__.load({
     /**
      * Type the unlock code and press Enter in the composer: the persona turns on instead of the
      * code being sent as a message. Capture phase so the host's own Enter handler never runs.
+     *
+     * Bound on both `window` and `document`: window capture fires first and still sees the event if
+     * a descendant handler stops propagation, while document capture survives the app remounting
+     * the editor subtree. The handler is guarded against running twice for one keypress.
      */
     function watchPersonaCode() {
       if (typeof document === 'undefined') return function () {};
       function onKeyDown(event) {
+        if (event.__yrmPersona === true) return;
+        /* An IME is still composing: the visible text is not final yet. */
+        if (event.isComposing === true) return;
         if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
-        const element = event.target;
+        const element = editableFrom(event);
         if (!element) return;
-        const editable =
-          element.tagName === 'TEXTAREA' || element.tagName === 'INPUT' || element.isContentEditable === true;
-        if (!editable) return;
-        const value =
-          typeof element.value === 'string' ? element.value : element.textContent || '';
-        if (value.trim() !== PERSONA_CODE) return;
+        if (composerText(element) !== PERSONA_CODE) return;
+        event.__yrmPersona = true;
         event.preventDefault();
         event.stopPropagation();
         clearComposer(element);
         enablePersona();
       }
+      window.addEventListener('keydown', onKeyDown, true);
       document.addEventListener('keydown', onKeyDown, true);
       return function () {
+        window.removeEventListener('keydown', onKeyDown, true);
         document.removeEventListener('keydown', onKeyDown, true);
       };
     }
@@ -2854,7 +2914,7 @@ window.__ModuleLoader__.load({
         h(
           'p',
           { className: 'yrm-set-sub' },
-          '在输入框输入 316651 并按回车即可快速开启（不会把代码发出去）。开关会同步到工作区根目录的 AGENTS.local.md：开启即写入角色卡，关闭即删除——只删本插件写的那份，你自己写的 AGENTS.local.md 不会被覆盖。',
+          '在输入框输入 316651 并按回车即可快速开启（不会把代码发出去）。开关直接作用于系统提示词：开启后每次对话都会带上角色卡，不往任何工作区写文件，所以换工作区、换会话一样生效。',
         ),
         h(
           'div',
@@ -2885,11 +2945,11 @@ window.__ModuleLoader__.load({
         h(
           'p',
           { className: 'yrm-set-note' },
-          '角色卡写在本插件所在的工作区：',
+          '角色卡作为系统提示词的一部分发给模型：',
+          h('b', null, '任何工作区、任何会话都生效'),
+          '，且不会往你的目录里放文件。两个开关只存一行状态在 ',
           personaPath ? h('code', null, personaPath) : h('code', null, '…'),
-          '。换到',
-          h('b', null, '其他工作区'),
-          '对话时这张卡不会生效——那边需要单独放一份 AGENTS.local.md。',
+          '。',
         ),
         h(
           'div',
@@ -2972,23 +3032,23 @@ window.__ModuleLoader__.load({
               className: 'yrm-set-btn',
               onClick: function () {
                 if (lookState.persona !== true) {
-                  /* Never pretend to save a file the switch says should not exist. */
-                  setPersonaMsg('角色扮演关闭中：保存不会写入文件，先打开上面的「角色扮演」开关。');
+                  /* No file and no prompt text while the switch is off; say so instead of pretending. */
+                  setPersonaMsg('角色扮演关闭中：卡片不会被加载，先打开上面的「角色扮演」开关。');
                   return;
                 }
                 syncPersona(lookState);
-                setPersonaMsg('已保存：角色卡已同步到工作区的 AGENTS.local.md。');
+                setPersonaMsg('已生效：下一条消息起使用最新的角色卡。');
               },
             },
-            '保存角色卡',
+            '应用角色卡',
           ),
           h(
             'span',
             { className: 'yrm-set-hint' },
             personaMsg ||
               (look.persona === true
-                ? '改完角色卡点它保存到工作区'
-                : '角色扮演关闭：保存不会写入文件'),
+                ? '改完角色卡点它，下一条消息即生效'
+                : '角色扮演关闭：卡片不会被加载'),
           ),
         ),
         h(
@@ -2996,7 +3056,7 @@ window.__ModuleLoader__.load({
           { className: 'yrm-set-sub' },
           '角色卡文件：',
           h('code', null, 'yeermu-theme\\assets\\persona.md'),
-          '。改完点「保存角色卡」让改动生效（或切换上面任一开关也会自动同步）。',
+          '。编辑后点「应用角色卡」即可，无需重启。',
         ),
         h(
           'div',
