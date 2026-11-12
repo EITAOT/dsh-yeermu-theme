@@ -300,6 +300,29 @@ node --check yeermu-theme\client.js → python tools\check_tdz.py → 重启 DSH
 5. 动手前说明你改哪个文件、哪一段。
 ```
 
+### 版本适配时（DSH 大版本升级后）
+
+```
+DSH 升到 <X.Y> 了，帮我适配 dsh-yeermu-theme。
+
+先读交接文档的 §9（升级适配流程）：
+  C:\Users\Eitaot\Documents\deepseek-harness\default-workspace\yeermu-theme\HANDOFF.md
+
+现象：<插件在「设置→插件」里能不能看到 / 哪个功能坏了 / 有什么报错或截图>
+当前：DSH <具体版本>，插件 1.0.1
+
+要求：
+1. 先按 §9 的排查顺序（哈希类名 → 槽位 id → 服务 API → data 钩子）定位，先告诉我"你判断哪里变了、依据是什么"，
+   不要一上来就改代码。
+2. 改之前说明改哪个文件、哪一段。
+3. 角色卡 assets/persona.md 不要动。
+4. 改完跑 tools 下的四项自检（build / check_tdz / check_build / check_prefs），然后让我重启验证。
+5. 验证通过后再动 engines.dsh、版本号，以及 npm / GitHub / Gist 三处更新；发布时我会临时给令牌或自己跑命令。
+```
+
+> 如果插件其实还能正常跑，只是市场提示"不兼容"，那就只要走"放宽 `engines.dsh` → 升版本 → 发布"这三步，
+> 不需要改代码；这种情形直接说一句"能跑，但市场判定不兼容"就够了。
+
 ---
 
 ## 9. DSH 大版本升级时的适配流程（0.3 及以后）
