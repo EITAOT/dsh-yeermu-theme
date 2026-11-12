@@ -299,3 +299,64 @@ node --check yeermu-theme\client.js → python tools\check_tdz.py → 重启 DSH
 4. 涉及宿主内部结构（哈希类名、DOM）时先用 asar-grep.mjs 翻包确认，不要猜。
 5. 动手前说明你改哪个文件、哪一段。
 ```
+
+---
+
+## 9. DSH 大版本升级时的适配流程（0.3 及以后）
+
+### 兼容性由谁决定
+
+`package.json` **顶层** `engines.dsh`（当前 `>=0.2.2-rc.1 <0.3.0`）。市场用
+`evaluatePluginCompatibility` 单独判定它，不满足就显示不兼容、安装被拦；插件管理器在
+`pnpm add` 后也会用同一份判断复核。**所以升级 DSH 后第一件事不是改代码，而是决定要不要放宽这个范围——
+放宽之前必须先真机验证。**
+
+### 顺序
+
+1. **备份 profile**：`C:\Users\Eitaot\.dsh\profiles\desktop`（插件行、`node_modules` 链接、设置都在里面）。
+2. 升级 DSH → 启动 → 先看插件是否加载：设置 → 插件里有 `dsh-yeermu-theme` 行、无元数据诊断。
+3. 按 §1 功能表逐项过 UI：窗框 / 状态条 / 视频背景 / 输入卡三块 / 侧栏 / 用户气泡 / 设置页 XP 皮肤 /
+   推理等级滑块 / 角色卡注入 / `316651`。
+4. 出问题按**最脆弱的顺序**排查：
+
+   | 顺序 | 依赖什么 | 怎么查 |
+   |---|---|---|
+   | 1 | CSS 哈希类名（`wtg9ga_*`、`AnXs9G_*`、`_9r0rkG_*`、`_switch_1ik0f_5`、`_thumb_1ik0f_33`…） | 重新提取新版 `frontend.css` 与对应 client 包，比对前缀 |
+   | 2 | 槽位 id（`conversation.composer.dock`、`settings.section`、`sidebar.brand.mark`） | 翻宿主包的 `slots.register` / `cordis_inspect_query` |
+   | 3 | 服务 API（`systemPrompt.section`/`getSectionOrder`、`sandboxPolicy.resolve`、`webServer.register`） | 提取该包读 README 与实现 |
+   | 4 | `data-*` 钩子（`[data-message-bubble]`、`[data-sidebar-collapsed]`、`[data-sidebar-right-guide-entry]`、`body[data-ds-dark-theme]`） | 翻 DOM 生成处的源码 |
+
+5. 改 `tools/client.template.js` 或 `index.js` → `python tools/build.py` → 四项自检 → 重启验证。
+6. 全部通过后：改 `engines.dsh` → 递增 `version` → `git commit/push` → `pnpm publish`
+   （很可能需要网页批准，用 `pnpm view ... versions` 复核）→ `build_index.py --version=… --timestamp=…`
+   → 替换 Gist。
+
+### 重新提取宿主包（判断哈希类名 / 槽位 / API）
+
+```powershell
+$node = "C:\Users\Eitaot\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe"
+# 1) 先看包里有哪些 client 包与样式
+& $node .build-yeermu\asar-ls.mjs "D:\Deepseek\resources\app.asar" "dsh/node_modules/@deepseek-ai" | Select-String "client-ui"
+# 2) 提取目标文件（路径以第 1 步的列表为准）
+& $node .build-yeermu\asar-extract.mjs "D:\Deepseek\resources\app.asar" "dsh/node_modules/@deepseek-ai/dsh-client-ui-conversation/lib/client.js" "conversation.now.js"
+# 3) 找类名 / 槽位名
+Select-String -Path conversation.now.js -Pattern "_bubble_|slots.register"
+```
+
+### 高概率会变的东西
+
+- **哈希前缀**（每次前端重新构建都会变）→ 一般只需改选择器字符串；
+- `dsh.client` 里的 `inject` 依赖名与槽位 id；
+- `systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX')` 这类集中常量名；
+- `webserver/index-inject` 若还在，**仍然不要用**（一行抛错会拉垮排在后面的插件，见 §5 #5）。
+
+### 不要做的事
+
+- 不要为了让旧选择器匹配而改 `#root` 尺寸（§5 #1）；
+- 不要复用宿主槽位 id（§5 #2）；
+- 没真机验证就放宽 `engines.dsh`：市场会把不兼容的包直接藏起来，用户强行装了也会崩。
+
+### 升级只影响自己时
+
+本地是 **link 安装**（`node_modules\dsh-yeermu-theme` → 工作区目录），改完文件重启即生效，
+不需要发布；发布只是为了别人。
