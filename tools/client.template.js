@@ -146,12 +146,36 @@ window.__ModuleLoader__.load({
       '  box-shadow:inset 0 1px 0 rgba(255,255,255,.16),inset 0 -1px 0 rgba(255,255,255,.1),',
       '    inset 1px 0 0 rgba(255,255,255,.22)}',
       /*
+       * Dial key in the title bar, to the right of the status plate and left of the native window
+       * controls. It lives in the frame because the composer's dock card is not mounted until a
+       * conversation has its first message, so a brand-new chat had no way to connect at all.
+       *
+       * `app-region: no-drag` is the important line: the title-bar strip is a window drag region, and
+       * a drag region swallows pointer events, so without it the key is visible but cannot be clicked.
+       */
+      '#yrm-frame .yrm-dial-key{position:absolute;top:9px;right:148px;height:22px;padding:0 9px;',
+      '  display:flex;align-items:center;box-sizing:border-box;',
+      '  font:12px/1 "YermuPixel","Zpix","SimSun",Tahoma,sans-serif;letter-spacing:.02em;',
+      '  color:#1b1b1b;cursor:pointer;pointer-events:auto;user-select:none;',
+      '  -webkit-app-region:no-drag;app-region:no-drag;',
+      '  background:linear-gradient(180deg,#fbfbf4,#e6e4d4);',
+      '  border:1px solid #241d47;border-radius:3px;',
+      '  box-shadow:inset 1px 1px 0 #ffffff,inset -1px -1px 0 rgba(120,105,175,.62),',
+      '    0 1px 2px rgba(0,0,0,.28)}',
+      '#yrm-frame .yrm-dial-key:hover{background:linear-gradient(180deg,#fff,#eeecdd)}',
+      '#yrm-frame .yrm-dial-key:active{transform:translateY(1px);',
+      '  box-shadow:inset 1px 1px 0 rgba(120,105,175,.7)}',
+      '#yrm-frame .yrm-dial-key.is-on{color:#0f3d0c;',
+      '  background:linear-gradient(180deg,#d9f7cf,#a8e79a);',
+      '  border-color:#2f6b22}',
+      '#yrm-frame .yrm-dial-key:focus-visible{outline:2px solid #2456d6;outline-offset:1px}',
+      /*
        * Status plate in the middle of the title bar. It is the window's "state line": the text comes
        * from the plugin settings today, and `setStatus()` is the seam a later feature can drive with
        * per-action messages without touching this markup.
        */
       '#yrm-frame .yrm-status{position:absolute;left:50%;top:5px;transform:translateX(-50%);',
-      '  width:min(62%,980px);height:30px;display:flex;align-items:center;justify-content:center;',
+      '  width:min(52%,calc(100vw - 560px),980px);height:30px;display:flex;align-items:center;justify-content:center;',
       '  padding:0 22px;box-sizing:border-box;overflow:hidden;',
       '  background:linear-gradient(180deg,#221b40 0%,#181232 55%,#120d28 100%);',
       /* Full pill: radius = half of the 30px height. A larger radius is clamped by CSS anyway. */
@@ -162,6 +186,8 @@ window.__ModuleLoader__.load({
       '    0 1px 2px rgba(0,0,0,.25)}',
       '#yrm-frame .yrm-status span{',
       '  font:15px/1.2 "Microsoft YaHei","MS YaHei","PingFang SC","SimHei",sans-serif;letter-spacing:0;',
+      /* `min-width:0` lets the text shrink so the dial key can hold its seat without being overlapped. */
+      '  flex:1 1 auto;min-width:0;text-align:center;',
       '  color:#e2dcfb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;',
       '  text-shadow:0 0 6px rgba(176,158,236,.45),0 1px 0 rgba(0,0,0,.5)}',
       /* Blinking caret while a line is being typed out. */
@@ -587,6 +613,27 @@ window.__ModuleLoader__.load({
         statusPlate.appendChild(statusText);
         bar.appendChild(statusPlate);
 
+        /*
+         * Dial key. Lives in the frame's status plate, not in the composer dock: the dock's slot is
+         * not rendered until a conversation has a first message, and a fresh chat must still be
+         * able to connect. Kept as a child of the plate so it cannot overlap the status text.
+         */
+        const dialKey = document.createElement('button');
+        dialKey.type = 'button';
+        dialKey.className = lookState.persona === true ? 'yrm-dial-key is-on' : 'yrm-dial-key';
+        dialKey.textContent = lookState.persona === true ? '已接通' : '拨号 316651';
+        dialKey.title = lookState.persona === true ? '挂断角色扮演' : '拨号 316651（开启角色扮演）';
+        dialKey.addEventListener('click', function (event) {
+          event.preventDefault();
+          event.stopPropagation();
+          try {
+            togglePersona();
+          } catch (error) {
+            console.warn('[yeermu-theme] dial key failed:', error);
+          }
+        });
+        bar.appendChild(dialKey);
+
         frame.appendChild(bar);
         document.body.appendChild(frame);
 
@@ -606,12 +653,14 @@ window.__ModuleLoader__.load({
               if (rect.x > 1) {
                 /* Controls on the left (macOS traffic lights): nothing to back here. */
                 plate.style.display = 'none';
+                dialKey.style.right = '10px';
                 return;
               }
               const width = Math.max(0, Math.round(window.innerWidth - rect.width));
               if (width > 20) {
                 plate.style.display = 'block';
                 plate.style.width = width + 'px';
+                dialKey.style.right = width + 10 + 'px';
                 return;
               }
             } catch (error) {
@@ -620,6 +669,7 @@ window.__ModuleLoader__.load({
           }
           plate.style.display = 'block';
           plate.style.width = '138px';
+          dialKey.style.right = '148px';
         }
         paintWinctl();
         if (detachWinctl) detachWinctl();
@@ -1616,11 +1666,34 @@ window.__ModuleLoader__.load({
       applyBackdropLook(look);
       refreshStatus(look);
       syncPersona(look);
+      notifyLook(look);
     }
 
-    /* ---- persona: the switch lives here, the card becomes a system-prompt section on the host ---- */
-    const PERSONA_CODE = '316651';
+    /* ---- persona: toggled from the dock card and from Settings; the card itself is host-side ---- */
+    /* Any component that shows the switch state subscribes here; `applyLook` is the single fan-out. */
+    const lookSubscribers = new Set();
+    function notifyLook(look) {
+      lookSubscribers.forEach(function (listener) {
+        try {
+          listener(look);
+        } catch (error) {
+          /* one broken listener must not stop the rest */
+        }
+      });
+    }
 
+    /*
+     * The title-bar dial key is plain DOM, not React, so it keeps itself in sync through this one
+     * subscription: whichever control flips the switch, the key's colour and label follow.
+     */
+    lookSubscribers.add(function (look) {
+      const key = document.querySelector('#yrm-frame .yrm-dial-key');
+      if (!key) return;
+      const on = look.persona === true;
+      key.classList.toggle('is-on', on);
+      key.textContent = on ? '已接通' : '拨号 316651';
+      key.title = on ? '挂断角色扮演' : '拨号 316651（开启角色扮演）';
+    });
     /**
      * Mirror the two switches onto the host, which persists them and contributes the card to the
      * system prompt for every session. Failures are logged only: a theme must never break the app
@@ -1645,7 +1718,7 @@ window.__ModuleLoader__.load({
         });
     }
 
-    /** Called by the 316651 shortcut and by the settings checkbox. */
+    /** Called by the dock card's dial key and by the settings checkbox. */
     function enablePersona() {
       const next = Object.assign({}, lookState, { persona: true });
       lookState = next;
@@ -1676,90 +1749,35 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /**
-     * The composer's current text, from whichever node actually holds it.
-     *
-     * The composer is a Lexical `contenteditable` div, so `value` does not exist on it; a rich
-     * editor may also inject zero-width characters, and a Chinese IME can commit full-width
-     * digits. All three are normalised away before the comparison, otherwise the same code typed
-     * into the same box matches or misses depending on the input method.
-     */
-    function composerText(element) {
-      const raw =
-        typeof element.value === 'string'
-          ? element.value
-          : typeof element.innerText === 'string' && element.innerText !== ''
-            ? element.innerText
-            : element.textContent || '';
-      return raw
-        .replace(/[\u200b-\u200d\ufeff]/g, '')
-        .normalize('NFKC')
-        .trim();
-    }
-
-    /** The editable node behind a keydown, including one inside a shadow root or a nested span. */
-    function editableFrom(event) {
-      const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
-      for (const node of path) {
-        if (!node || !node.tagName) continue;
-        if (node.tagName === 'TEXTAREA' || node.tagName === 'INPUT') return node;
-        if (node.isContentEditable === true && node.getAttribute('contenteditable') === 'true') return node;
-      }
-      const target = event.target;
-      if (!target) return null;
-      if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') return target;
-      if (target.isContentEditable === true) return target;
-      return null;
-    }
-
-    /** Native setter + input event, so the host's controlled textarea actually clears. */
-    function clearComposer(element) {
+    /** Turn the card off from the dock button (the Settings checkbox calls the same state path). */
+    function disablePersona() {
+      const next = Object.assign({}, lookState, { persona: false });
+      lookState = next;
       try {
-        if (element.tagName === 'TEXTAREA' || element.tagName === 'INPUT') {
-          const proto =
-            element.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-          const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
-          if (descriptor && descriptor.set) descriptor.set.call(element, '');
-          else element.value = '';
-        } else if (element.isContentEditable) {
-          element.textContent = '';
-        }
-        element.dispatchEvent(new Event('input', { bubbles: true }));
+        saveLook(next);
       } catch (error) {
-        /* clearing is cosmetic: the switch already flipped */
+        /* storage is optional */
+      }
+      try {
+        applyLook(next);
+      } catch (error) {
+        try {
+          syncPersona(next);
+        } catch (ignored) {
+          /* nothing left to try */
+        }
+      }
+      try {
+        setStatus('线路已挂断……下次再聊哦~');
+      } catch (error) {
+        /* the plate may not be mounted */
       }
     }
 
-    /**
-     * Type the unlock code and press Enter in the composer: the persona turns on instead of the
-     * code being sent as a message. Capture phase so the host's own Enter handler never runs.
-     *
-     * Bound on both `window` and `document`: window capture fires first and still sees the event if
-     * a descendant handler stops propagation, while document capture survives the app remounting
-     * the editor subtree. The handler is guarded against running twice for one keypress.
-     */
-    function watchPersonaCode() {
-      if (typeof document === 'undefined') return function () {};
-      function onKeyDown(event) {
-        if (event.__yrmPersona === true) return;
-        /* An IME is still composing: the visible text is not final yet. */
-        if (event.isComposing === true) return;
-        if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
-        const element = editableFrom(event);
-        if (!element) return;
-        if (composerText(element) !== PERSONA_CODE) return;
-        event.__yrmPersona = true;
-        event.preventDefault();
-        event.stopPropagation();
-        clearComposer(element);
-        enablePersona();
-      }
-      window.addEventListener('keydown', onKeyDown, true);
-      document.addEventListener('keydown', onKeyDown, true);
-      return function () {
-        window.removeEventListener('keydown', onKeyDown, true);
-        document.removeEventListener('keydown', onKeyDown, true);
-      };
+    /** The dock card's dial key: one click connects, another hangs up. */
+    function togglePersona() {
+      if (lookState.persona === true) disablePersona();
+      else enablePersona();
     }
 
     const CSS = [
@@ -1875,6 +1893,22 @@ window.__ModuleLoader__.load({
       '  white-space:nowrap;font-variant-numeric:tabular-nums;letter-spacing:.02em}',
       '.yrm-stats b{font-weight:700;color:#123049}',
       '.yrm-sep{color:#8a8a7a}',
+      /*
+       * Dial key. Fits the XP card: grey raised face, pressed state moves down a pixel. Green when
+       * the line is up, so the switch state is readable without opening Settings.
+       */
+      '.yrm-dial{margin-top:6px;padding:3px 8px 4px;font:600 11.5px/1.35 "Microsoft YaHei",Tahoma,sans-serif;',
+      '  color:#3a3a3a;cursor:pointer;background:linear-gradient(180deg,#fbfbf4,#e6e4d4);',
+      /* The dock is click-through so the chat area stays usable; this key opts back in. */
+      '  pointer-events:auto;-webkit-user-select:none;user-select:none;',
+      '  border:1px solid #8a8a8a;border-right-color:#f4f4f4;border-bottom-color:#f4f4f4;',
+      '  box-shadow:inset 0 0 0 1px #fff,1px 1px 0 #6f6f6f;border-radius:2px;letter-spacing:.02em}',
+      '.yrm-dial:hover{background:linear-gradient(180deg,#fff,#eeecdd)}',
+      '.yrm-dial:active{border-color:#6f6f6f;border-right-color:#d8d6c8;border-bottom-color:#d8d6c8;',
+      '  box-shadow:inset 1px 1px 0 #9a9a8a;transform:translateY(1px)}',
+      '.yrm-dial.is-on{color:#12430f;background:linear-gradient(180deg,#d9f7cf,#a8e79a);',
+      '  border-color:#3f8a2e;border-right-color:#d6f0cd;border-bottom-color:#d6f0cd}',
+      '.yrm-dial:focus-visible{outline:2px solid #2456d6;outline-offset:1px}',
       /* ---- XP progress well ---- */
       '.yrm-ctx{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:#44443a}',
       '.yrm-track{position:relative;display:flex;align-items:center;gap:1px;flex:1 1 auto;height:12px;',
@@ -2636,6 +2670,21 @@ window.__ModuleLoader__.load({
       const presence = running ? 'busy' : online ? 'online' : 'offline';
       const PRESENCE_TEXT = { online: '在线中', offline: '已断线', busy: '干活中' };
 
+      /* Persona switch, mirrored from the single look state so the dial key always tells the truth. */
+      const personaState = React.useState(lookState.persona === true);
+      const personaOn = personaState[0];
+      const setPersonaOn = personaState[1];
+      React.useEffect(function () {
+        const listener = function (look) {
+          setPersonaOn(look.persona === true);
+        };
+        lookSubscribers.add(listener);
+        setPersonaOn(lookState.persona === true);
+        return function () {
+          lookSubscribers.delete(listener);
+        };
+      }, []);
+
       /*
        * Tile height follows the XP card. Measuring the card instead of hard-coding a number keeps
        * the three panels flush if the card's content (fonts, stats line) ever changes.
@@ -2727,6 +2776,28 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'yrm-sep' }, '\u00b7'),
                 '缓存命中 ',
                 h('b', null, hit === null ? '--' : hit + '%'),
+              ),
+              /*
+               * The dial key. The lore's empty number lives on the button instead of in the
+               * composer: typing a code into a Lexical editor cannot be removed reliably from
+               * outside, so the shortcut is a click — explicit, visible, and impossible to misfire.
+               */
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: personaOn ? 'yrm-dial is-on' : 'yrm-dial',
+                  title: personaOn ? '挂断（关闭角色扮演）' : '拨号 316651（开启角色扮演）',
+                  onClick: function (event) {
+                    event.stopPropagation();
+                    try {
+                      togglePersona();
+                    } catch (error) {
+                      console.warn('[yeermu-theme] persona toggle failed:', error);
+                    }
+                  },
+                },
+                personaOn ? '\u260e 已接通 316651 · 点此挂断' : '\u260e 拨号 316651',
               ),
               h(
                 'div',
@@ -2914,7 +2985,7 @@ window.__ModuleLoader__.load({
         h(
           'p',
           { className: 'yrm-set-sub' },
-          '在输入框输入 316651 并按回车即可快速开启（不会把代码发出去）。开关直接作用于系统提示词：开启后每次对话都会带上角色卡，不往任何工作区写文件，所以换工作区、换会话一样生效。',
+          '也可以直接点输入卡上那颗「拨号 316651」的键来开关（接通后按钮变绿，再点一次挂断）。开关直接作用于系统提示词：开启后每次对话都会带上角色卡，不往任何工作区写文件，所以换工作区、换会话一样生效。',
         ),
         h(
           'div',
@@ -3175,9 +3246,6 @@ window.__ModuleLoader__.load({
           });
           ctx.effect(function () {
             return startPanelSkin();
-          });
-          ctx.effect(function () {
-            return watchPersonaCode();
           });
           ctx.effect(function () {
             return startEffortSlider();

@@ -1,6 +1,6 @@
 {
   "name": "dsh-yeermu-theme",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "description": "Yermu terminal theme for DSH: pixel window frame, holo portrait card, looping video backdrop, XP settings skin, and an optional persona card injected into the system prompt.",
   "license": "CC-BY-NC-4.0",

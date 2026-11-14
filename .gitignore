@@ -4,6 +4,9 @@ node_modules/
 # Local pack output.
 *.tgz
 
+# Scratch file written by tools/check_prefs.mjs (removed on exit; ignore a crashed run's leftover).
+.persona-check.json
+
 # OS / editor noise.
 Thumbs.db
 .DS_Store

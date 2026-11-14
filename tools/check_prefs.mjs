@@ -9,10 +9,19 @@ import { pathToFileURL } from 'node:url';
 const PKG = path.resolve(import.meta.dirname, '..');
 const PRESET = path.join(PKG, 'assets', 'preset.json');
 const ALLOWED = ['surface', 'video', 'veil', 'status', 'frame', 'scene', 'splash', 'splashSound', 'persona', 'personaWork'];
-// Keep the persona round trip away from the real setting: point the state file at a temp path
-// before the host half is imported (it reads the seam at module load).
-const STATE = path.join(os.tmpdir(), 'yeermu-check-' + process.pid + '.json');
+// Keep the persona round trip away from the real setting: point the state file at a scratch file
+// beside the package before the host half is imported (it reads the seam at module load).
+// A package-local path beats `os.tmpdir()`: under a restricted sandbox TEMP may point at a directory
+// the process cannot write, and the check should not depend on the environment it runs in.
+const STATE = path.join(PKG, '.persona-check.json');
 process.env.YEERMU_PERSONA_STATE = STATE;
+process.on('exit', () => {
+  try {
+    fs.rmSync(STATE, { force: true });
+  } catch {
+    /* best effort */
+  }
+});
 const mod = await import(pathToFileURL(path.join(PKG, 'index.js')).href);
 
 let failed = 0;
@@ -48,11 +57,13 @@ check('face in 0..3', Number.isInteger(face) && face >= 0 && face <= 3, String(f
 // ---- persona: a system-prompt section, not a workspace file ----
 const persona = mod.personaState();
 check('persona state reports the systemPrompt mode', persona.mode === 'systemPrompt', persona.mode);
-// The default is ~/.dsh/yeermu-theme/persona.json; this run overrides it with a temp file, so the
-// invariant worth asserting is the one that matters: switch state never lands inside the package.
+// The default is ~/.dsh/yeermu-theme/persona.json; this run points it at a scratch file beside the
+// package, so assert the two invariants that actually matter for a published install: the state
+// never lands in `node_modules` (wiped on upgrade) or in the shipped `assets` folder, and the scratch
+// file is cleaned up afterwards.
 check(
-  'persona state is never written inside the package',
-  !persona.path.startsWith(PKG) && !/node_modules/.test(persona.path),
+  'persona state avoids node_modules and the shipped assets',
+  !/node_modules/.test(persona.path) && !/[\\/]assets[\\/]/.test(persona.path),
   persona.path,
 );
 check('persona prompt is empty while the switch is off', mod.personaPrompt() === '', String(mod.personaPrompt().length));
@@ -105,5 +116,6 @@ check('a corrupt state file means off', mod.personaPrompt() === '' && mod.person
 
 fs.rmSync(STATE, { force: true });
 check('a missing state file means off', mod.personaPrompt() === '' && mod.personaState().exists === false);
+check('the scratch state file is cleaned up', !fs.existsSync(STATE), STATE);
 
 process.exit(failed === 0 ? 0 : 1);

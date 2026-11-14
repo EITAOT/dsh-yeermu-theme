@@ -111,9 +111,9 @@
 | 输入卡 | `DockCard`、`speedText` / `cacheHitText` / `contextPercent`、`SideCalendar`、`SideMonitor` |
 | 头像轮换 | `FACES` / `loadFaceIndex()` / `cycleFace()`；`.yrm-well.is-emi` 下三个 keyframes |
 | 三列 / 收起 | `.yrm-dock`、`DockCard` 里的 `ResizeObserver`（960px）、`--yrm-tile-h` |
-| **角色扮演** | `PERSONA_CODE`（`'316651'`）、`watchPersonaCode()`、`enablePersona()`、`syncPersona()`、`clearComposer()` |
-| 设置页 UI | `SettingsSection`（含「打开角色卡文件」「保存角色卡」两个按钮与琥珀色工作区提示；按钮原名「重新生成指令文件」，2026-11-11 按用户要求改掉歧义） |
-| **宿主侧人设** | `index.js`：`personaDocument(work)`、`personaState()`、`resolvePersonaTarget(ctx)`、`openInEditor()`、`PERSONA_SOURCE` / `PERSONA_FILE` / `PERSONA_MARK` |
+| **角色扮演** | `enablePersona()` / `disablePersona()` / `togglePersona()` / `syncPersona()`、`lookSubscribers`；标题栏 `.yrm-dial-key`（`#yrm-frame` 内），输入卡 `.yrm-dial` |
+| 设置页 UI | `SettingsSection`（含「打开角色卡文件」「应用角色卡」两个按钮与琥珀色提示；按钮原名「重新生成指令文件」，2026-11-11 按用户要求改掉歧义） |
+| **宿主侧人设** | `index.js`：`personaBody(work)`、`personaPrompt()`、`personaState()`、`openInEditor()`、`PERSONA_SOURCE` / `PERSONA_SECTION` / `PERSONA_STATE_FILE` |
 
 ---
 
@@ -197,6 +197,10 @@ node -e "import('file:///.../index.js').then(m=>console.log(Object.keys(m)))"
 24. **绝不要对宿主的菜单用 `setPointerCapture`**（2026-11-11 差点踩死）：捕获会把 `pointerup` 重定向到捕获元素，Chromium 随后把那个 `click` 也派给捕获元素——宿主监听在选项上的 `onClick` 直接收不到，**普通单击会整体失效**。要拖拽就在 `pointerdown` 时临时往 `window` 挂 `pointermove`/`pointerup`（捕获阶段），抬起即摘除。另外：拖拽的"按下 A、松开 B"浏览器只会把 `click` 派发到共同祖先，所以必须在 `pointerup` 里对指针下那一段手动 `.click()`；**同一段按下又松开时不要手动点**，否则会重复提交一次模型选择。
 25. **像素轮廓的台阶必须明显宽于描边**（2026-11-11 气泡改版踩过）：描边 3px 时若台阶也是 3px，外扩 3px 会让相邻台阶合并成同一个顶点（顶点重复），Chromium 在那种退化角点上的抗锯齿会在轮廓上漏出一个 1px 小白点。现在倒角台阶 4px、尾巴台阶 8px。判断依据：`.build-yeermu/gen_bubble_polys.py` 输出里若出现连续重复坐标，就是退化。
 26. **headless 浏览器在本沙箱里跑不起来**（2026-11-11 实测）：`msedge --headless=new --screenshot` 报 `mojo platform_channel: 拒绝访问`（命名管道被沙箱挡住），所以"渲染 CSS 单独截图"这条路走不通；预览请继续用 `.build-yeermu/preview_*.py`，最终效果只能靠重启后让用户看。
+27. **标题栏是窗口拖动区，会吞掉鼠标事件**（2026-11-15 实测）：40px 标题带上的任何自建控件，必须显式 `-webkit-app-region:no-drag;app-region:no-drag`，否则"看得见、点不着"——`pointer-events:auto` 管不到这一层。
+28. **输入卡的槽位在"新对话"里根本不渲染**：`conversation.composer.dock` 要等会话有第一条消息才挂载。任何"随时可用"的控件都不能只放在 DockCard 里（标题栏拨号键就是为此加的）。
+29. **不要把交互做成"输入框里的暗号"**：Lexical 的文本存在它自己的模型里，DOM 层的清空（`execCommand('delete')`、延后重试、替换子节点）都会被下一帧还原；同时中文输入法会把回车当"上屏确认"吃掉，页面收不到 keydown。两条加起来就是"只能用一次 + 输入框残留"。交互一律做成可见控件。
+30. **`#yrm-frame` 整体 `pointer-events:none`**：其中的可点元素要各自写 `pointer-events:auto`（窗口控件背板是原生层，不受影响）。
 
 ---
 
@@ -257,10 +261,14 @@ ctx.systemPrompt.section({ name:'yeermu:persona', order: prefix+1,
 ### 开关与触发
 
 - 设置页「角色扮演」（默认关）+「工作时也扮演」（默认关，未开总开关时置灰）。
-- **输入框输入 `316651` 并回车**：捕获阶段拦截 Enter（不会发出去）、清空输入、置 `persona=true`、状态条打一句「语音线路接通——是我是我，好久不见啊？」。
+- **三个开关入口，共用同一份状态**（`lookState.persona` → `applyLook` → `syncPersona`）：
+  1. **标题栏拨号键**（`.yrm-dial-key`，在 `#yrm-frame` 状态条右侧）——任何页面状态都在，包括**新对话空状态**，因为输入卡的槽位在首条消息前根本不渲染；
+  2. **输入卡拨号键**（`.yrm-dial`，DockCard 里）——有对话时顺手；
+  3. 设置页复选框。
 - 关闭开关 = 写入 `{ enabled:false }`；下一轮组装时段落返回空串，等于从提示词里消失（不删除任何用户文件）。
 - 设置页另有「打开角色卡文件」（记事本打开 `assets/persona.md`）与「应用角色卡」（重新 POST 状态，让改过的卡片立即被采用）。
-- ⚠️ **「保存角色卡」在开关关闭时是空操作**（2026-11-11 踩过）：它发的 POST 带着 `enabled: look.persona`，关着的时候 Host 只会走"删除"分支，于是点了像没反应——用户当时以为"文件没落到工作区根"。现在按钮会在关闭时明确提示（"保存不会写入文件"），不再假装写文件。**文件落点已实测正确**：`default-workspace\AGENTS.local.md`，`GET /yeermu-theme/persona` 返回 `enabled/path/foreign` 可直接核对。
+- ⚠️ **「316651 输入即接通」这条路已废弃**（2026-11-15）：输入框是 Lexical 富文本，文本存在它自己的模型里，DOM 层清空会被下一帧还原（`execCommand('delete')`、延后重试、替换子节点三种都实测失败，日志为 `clear layer=replace cleared=False`）；而回车又常被中文输入法当作"上屏确认"吃掉，页面收不到 keydown。结果就是"只能用一次"且输入框残留号码。改成按钮后这一整类问题消失，**不要再加回输入框暗号**。
+- ⚠️ **「保存角色卡」在开关关闭时是空操作**（2026-11-11 踩过）：它发的 POST 带着 `enabled: look.persona`，关着的时候 Host 只会走"删除"分支，于是点了像没反应。现在按钮在关闭时会明确提示，不再假装写文件。
 
 ### 卡片结构（当前版本）
 
@@ -339,7 +347,7 @@ DSH 升到 <X.Y> 了，帮我适配 dsh-yeermu-theme。
 1. **备份 profile**：`C:\Users\Eitaot\.dsh\profiles\desktop`（插件行、`node_modules` 链接、设置都在里面）。
 2. 升级 DSH → 启动 → 先看插件是否加载：设置 → 插件里有 `dsh-yeermu-theme` 行、无元数据诊断。
 3. 按 §1 功能表逐项过 UI：窗框 / 状态条 / 视频背景 / 输入卡三块 / 侧栏 / 用户气泡 / 设置页 XP 皮肤 /
-   推理等级滑块 / 角色卡注入 / `316651`。
+   推理等级滑块 / 角色卡注入 / 标题栏与输入卡两颗拨号键（**可在新对话里点得动**）。
 4. 出问题按**最脆弱的顺序**排查：
 
    | 顺序 | 依赖什么 | 怎么查 |
